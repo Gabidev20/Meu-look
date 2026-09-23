@@ -15,6 +15,9 @@ async function generateJson<T extends z.ZodType>(opts: {
   system: string;
   contents: Content[];
 }): Promise<z.infer<T>> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("A IA ainda não foi configurada (falta a GEMINI_API_KEY na Vercel).");
+  }
   // O Gemini aceita JSON Schema, mas não precisa do cabeçalho "$schema".
   const jsonSchema: Record<string, unknown> = { ...z.toJSONSchema(opts.schema) };
   delete jsonSchema.$schema;
