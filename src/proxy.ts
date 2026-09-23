@@ -1,12 +1,14 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { SUPABASE_KEY, SUPABASE_URL } from "@/lib/supabase/env";
 
 // Renova a sessão do Supabase a cada request e manda quem não está logado para /login.
 export async function proxy(request: NextRequest) {
   // Sem Supabase o site não funciona; a chave do Gemini é opcional (sem ela, cadastro manual).
-  const missing = ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"].filter(
-    (name) => !process.env[name],
-  );
+  const missing = [
+    !SUPABASE_URL && "NEXT_PUBLIC_SUPABASE_URL",
+    !SUPABASE_KEY && "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  ].filter(Boolean);
   if (missing.length) {
     return new NextResponse(
       `Configuração pendente: cadastre na Vercel (Settings → Environment Variables) e faça Redeploy:\n\n${missing.join("\n")}`,
@@ -17,8 +19,8 @@ export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    SUPABASE_URL,
+    SUPABASE_KEY,
     {
       cookies: {
         getAll() {
