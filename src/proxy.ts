@@ -3,6 +3,18 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Renova a sessão do Supabase a cada request e manda quem não está logado para /login.
 export async function proxy(request: NextRequest) {
+  const missing = [
+    "NEXT_PUBLIC_SUPABASE_URL",
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+    "ANTHROPIC_API_KEY",
+  ].filter((name) => !process.env[name]);
+  if (missing.length) {
+    return new NextResponse(
+      `Configuração pendente: cadastre na Vercel (Settings → Environment Variables) e faça Redeploy:\n\n${missing.join("\n")}`,
+      { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } },
+    );
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
