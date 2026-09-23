@@ -35,6 +35,9 @@ create table if not exists public.outfits (
 );
 create index if not exists outfits_user_idx on public.outfits (user_id, created_at desc);
 
+-- Libera as tabelas para usuários logados (necessário se "expose new tables" estiver desligado)
+grant select, insert, update, delete on public.items, public.outfits to authenticated;
+
 -- Cada pessoa só enxerga e altera as próprias linhas ---------------------------
 alter table public.items   enable row level security;
 alter table public.outfits enable row level security;
