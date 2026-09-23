@@ -6,7 +6,7 @@ export async function proxy(request: NextRequest) {
   const missing = [
     "NEXT_PUBLIC_SUPABASE_URL",
     "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
   ].filter((name) => !process.env[name]);
   if (missing.length) {
     return new NextResponse(

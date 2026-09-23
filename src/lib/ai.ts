@@ -1,24 +1,48 @@
 import "server-only";
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { ApiError, GoogleGenAI, type Content } from "@google/genai";
 import { z } from "zod";
 import { CATEGORY_VALUES, type Item, type Outfit, type SuggestedLook } from "./types";
 
-let _client: Anthropic | null = null;
-const anthropic = () => (_client ??= new Anthropic());
+let _client: GoogleGenAI | null = null;
+const gemini = () => (_client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
 
-const MODEL = "claude-opus-5";
+// Modelos do plano gratuito. Se a cota do principal acabar no dia, tenta o reserva.
+const MODELS = [process.env.GEMINI_MODEL || "gemini-3.5-flash", "gemini-3.1-flash-lite"];
 
-// Se um filtro de segurança recusar por engano, a API refaz o pedido em outro modelo.
-const FALLBACK = {
-  betas: ["server-side-fallback-2026-07-01"] as Anthropic.Beta.AnthropicBeta[],
-  fallbacks: "default" as const,
-};
-
-function assertNotRefused(response: { stop_reason: string | null }) {
-  if (response.stop_reason === "refusal") {
-    throw new Error("A IA não conseguiu processar este pedido. Tente de outro jeito.");
+/** Chama o Gemini pedindo JSON no formato do schema e valida a resposta. */
+async function generateJson<T extends z.ZodType>(opts: {
+  schema: T;
+  system: string;
+  contents: Content[];
+}): Promise<z.infer<T>> {
+  // O Gemini aceita JSON Schema, mas não precisa do cabeçalho "$schema".
+  const jsonSchema: Record<string, unknown> = { ...z.toJSONSchema(opts.schema) };
+  delete jsonSchema.$schema;
+  let lastError: unknown;
+  for (const model of MODELS) {
+    try {
+      const response = await gemini().models.generateContent({
+        model,
+        contents: opts.contents,
+        config: {
+          systemInstruction: opts.system,
+          responseMimeType: "application/json",
+          responseJsonSchema: jsonSchema,
+        },
+      });
+      if (!response.text) throw new Error("A IA não respondeu. Tente de novo.");
+      return opts.schema.parse(JSON.parse(response.text));
+    } catch (e) {
+      lastError = e;
+      // 429 = cota gratuita esgotada; 404 = modelo indisponível. Nos dois casos, tenta o próximo.
+      if (e instanceof ApiError && (e.status === 429 || e.status === 404)) continue;
+      throw e;
+    }
   }
+  if (lastError instanceof ApiError && lastError.status === 429) {
+    throw new Error("A cota gratuita da IA acabou por hoje. Tente de novo amanhã.");
+  }
+  throw lastError;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,29 +67,19 @@ export async function analyzeItemImage(
   imageBase64: string,
   mediaType: "image/jpeg" | "image/png" | "image/webp",
 ): Promise<ItemAnalysis> {
-  const response = await anthropic().beta.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    ...FALLBACK,
-    output_config: { effort: "low", format: betaZodOutputFormat(ItemAnalysis) },
+  return generateJson({
+    schema: ItemAnalysis,
     system:
       "Você é um personal stylist catalogando o guarda-roupa de um cliente. " +
       "Descreva a peça principal da foto (ignore fundo, cabide, mãos ou pessoa vestindo). " +
       "Responda sempre em português do Brasil.",
-    messages: [
+    contents: [
       {
         role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: mediaType, data: imageBase64 } },
-          { type: "text", text: "Catalogue esta peça." },
-        ],
+        parts: [{ inlineData: { mimeType: mediaType, data: imageBase64 } }, { text: "Catalogue esta peça." }],
       },
     ],
   });
-
-  assertNotRefused(response);
-  if (!response.parsed_output) throw new Error("Não consegui analisar a foto.");
-  return response.parsed_output;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,11 +153,8 @@ export async function suggestLooks(opts: {
     .filter(Boolean)
     .join("\n\n");
 
-  const response = await anthropic().beta.messages.parse({
-    model: MODEL,
-    max_tokens: 16000,
-    ...FALLBACK,
-    output_config: { effort: "medium", format: betaZodOutputFormat(LooksResponse) },
+  const parsed = await generateJson({
+    schema: LooksResponse,
     system:
       "Você é um personal stylist experiente e com bom gosto. Monte looks usando EXCLUSIVAMENTE peças " +
       "do guarda-roupa informado, referenciadas pelos códigos (p1, p2…). Nunca invente peças.\n" +
@@ -151,12 +162,8 @@ export async function suggestLooks(opts: {
       "e sapato se houver algum cadastrado. Casaco, bolsa e acessórios são opcionais, use quando elevarem o look. " +
       "Respeite harmonia de cores, proporções, formalidade coerente entre as peças e a ocasião pedida. " +
       "Evite repetir combinações usadas recentemente. Escreva em português do Brasil, com tom próximo e elegante.",
-    messages: [{ role: "user", content: prompt }],
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
   });
-
-  assertNotRefused(response);
-  const parsed = response.parsed_output;
-  if (!parsed) throw new Error("Não consegui montar os looks.");
 
   const looks = parsed.looks
     .map((look) => ({

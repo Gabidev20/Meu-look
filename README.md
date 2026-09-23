@@ -2,11 +2,11 @@
 
 Guarda-roupa pessoal com um stylist de IA. Cada pessoa tem login próprio e só vê as próprias peças.
 
-- **Guarda-roupa:** tire a foto da peça no celular, a IA (Claude) preenche nome, categoria, cores, estilo, formalidade e estação.
+- **Guarda-roupa:** tire a foto da peça no celular, a IA (Gemini) preenche nome, categoria, cores, estilo, formalidade e estação.
 - **Criar look:** diga a ocasião ("jantar", "trabalho", "dia frio"…) e a IA monta 3 looks **só com as suas peças**, explicando por quê.
 - **Meus looks:** salve os favoritos e marque "Usei hoje"; a IA evita repetir o que você usou recentemente.
 
-Stack: Next.js 16 · Supabase (login, banco e fotos privadas) · Claude API · hospedagem na Vercel.
+Stack: Next.js 16 · Supabase (login, banco e fotos privadas) · Google Gemini (plano gratuito) · hospedagem na Vercel. Custo: R$ 0.
 
 ---
 
@@ -18,8 +18,10 @@ Stack: Next.js 16 · Supabase (login, banco e fotos privadas) · Claude API · h
 3. Menu **Authentication → Sign In / Providers → Email**: desligue **Confirm email** se não quiser confirmar pelo e-mail (mais simples para uso pessoal).
 4. Menu **Project Settings → API Keys**: copie a **Project URL** e a **Publishable key**.
 
-### 2. Anthropic (a IA)
-1. Crie uma conta em https://console.anthropic.com, adicione créditos (US$ 5 duram bastante) e crie uma **API key**.
+### 2. Google Gemini (a IA): grátis, sem cartão
+1. Entre em https://aistudio.google.com com sua conta Google.
+2. Clique em **Get API key → Create API key** e copie a chave.
+> No plano gratuito o Google pode usar o conteúdo enviado (fotos das peças e pedidos) para melhorar os modelos dele.
 
 ### 3. Rodar no computador (opcional, para testar)
 ```bash
@@ -32,7 +34,7 @@ Abra http://localhost:3000.
 ### 4. Publicar na Vercel: grátis
 1. Suba esta pasta para um repositório no GitHub.
 2. Em https://vercel.com → **Add New → Project** → importe o repositório.
-3. Em **Environment Variables**, cadastre `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `ANTHROPIC_API_KEY`.
+3. Em **Environment Variables**, cadastre `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `GEMINI_API_KEY`.
 4. **Deploy**. Você recebe um endereço tipo `meu-look.vercel.app`.
 
 ### 5. No celular
@@ -45,7 +47,7 @@ Abra o endereço, crie sua conta e use **Compartilhar → Adicionar à Tela de I
 
 ## Custos estimados
 - Supabase e Vercel: plano grátis atende tranquilamente duas pessoas.
-- Claude: cada peça analisada ou rodada de 3 looks custa alguns centavos de dólar.
+- Gemini: plano gratuito, com limite diário de pedidos. Se acabar, o site avisa e volta a funcionar no dia seguinte (o cadastro manual das peças continua funcionando).
 
 ## Próximos passos
 - Provador virtual: enviar uma foto de corpo inteiro e gerar uma imagem vestindo o look.
