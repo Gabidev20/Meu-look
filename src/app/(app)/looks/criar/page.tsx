@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { LookCreator } from "./LookCreator";
 
 // A IA pode levar alguns segundos para montar os looks.
-export const maxDuration = 120;
+export const maxDuration = 60;
 
 export default async function CreateLookPage() {
   const supabase = await createClient();

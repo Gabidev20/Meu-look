@@ -1,5 +1,5 @@
 import "server-only";
-import { ApiError, GoogleGenAI, type Content } from "@google/genai";
+import { ApiError, GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
 import { z } from "zod";
 import { CATEGORY_VALUES, type Item, type Outfit, type SuggestedLook } from "./types";
 
@@ -9,11 +9,19 @@ const gemini = () => (_client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_A
 // Modelos do plano gratuito. Se a cota do principal acabar no dia, tenta o reserva.
 const MODELS = [process.env.GEMINI_MODEL || "gemini-3.5-flash", "gemini-3.1-flash-lite"];
 
-/** Chama o Gemini pedindo JSON no formato do schema e valida a resposta. */
+class TimeoutError extends Error {}
+
+/**
+ * Chama o Gemini pedindo JSON no formato do schema e valida a resposta.
+ * Cada tentativa tem um limite de tempo; se estourar (ou a cota acabar), tenta o modelo reserva.
+ * A soma das tentativas precisa caber no limite da função na Vercel (maxDuration = 60s).
+ */
 async function generateJson<T extends z.ZodType>(opts: {
   schema: T;
   system: string;
   contents: Content[];
+  thinking: ThinkingLevel;
+  timeoutMs: number;
 }): Promise<z.infer<T>> {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("A IA ainda não foi configurada (falta a GEMINI_API_KEY na Vercel).");
@@ -21,8 +29,11 @@ async function generateJson<T extends z.ZodType>(opts: {
   // O Gemini aceita JSON Schema, mas não precisa do cabeçalho "$schema".
   const jsonSchema: Record<string, unknown> = { ...z.toJSONSchema(opts.schema) };
   delete jsonSchema.$schema;
+
   let lastError: unknown;
   for (const model of MODELS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
     try {
       const response = await gemini().models.generateContent({
         model,
@@ -31,16 +42,26 @@ async function generateJson<T extends z.ZodType>(opts: {
           systemInstruction: opts.system,
           responseMimeType: "application/json",
           responseJsonSchema: jsonSchema,
+          thinkingConfig: { thinkingLevel: opts.thinking },
+          abortSignal: controller.signal,
         },
       });
       if (!response.text) throw new Error("A IA não respondeu. Tente de novo.");
       return opts.schema.parse(JSON.parse(response.text));
     } catch (e) {
-      lastError = e;
-      // 429 = cota gratuita esgotada; 404 = modelo indisponível. Nos dois casos, tenta o próximo.
-      if (e instanceof ApiError && (e.status === 429 || e.status === 404)) continue;
+      lastError = controller.signal.aborted ? new TimeoutError() : e;
+      console.error(`Gemini ${model} falhou:`, e);
+      const retryable =
+        controller.signal.aborted ||
+        (e instanceof ApiError && [400, 404, 429, 500, 503].includes(e.status));
+      if (retryable) continue;
       throw e;
+    } finally {
+      clearTimeout(timer);
     }
+  }
+  if (lastError instanceof TimeoutError) {
+    throw new Error("A IA demorou demais para responder. Tente de novo em instantes.");
   }
   if (lastError instanceof ApiError && lastError.status === 429) {
     throw new Error("A cota gratuita da IA acabou por hoje. Tente de novo amanhã.");
@@ -72,6 +93,8 @@ export async function analyzeItemImage(
 ): Promise<ItemAnalysis> {
   return generateJson({
     schema: ItemAnalysis,
+    thinking: ThinkingLevel.MINIMAL,
+    timeoutMs: 25_000,
     system:
       "Você é um personal stylist catalogando o guarda-roupa de um cliente. " +
       "Descreva a peça principal da foto (ignore fundo, cabide, mãos ou pessoa vestindo). " +
@@ -158,6 +181,8 @@ export async function suggestLooks(opts: {
 
   const parsed = await generateJson({
     schema: LooksResponse,
+    thinking: ThinkingLevel.LOW,
+    timeoutMs: 28_000,
     system:
       "Você é um personal stylist experiente e com bom gosto. Monte looks usando EXCLUSIVAMENTE peças " +
       "do guarda-roupa informado, referenciadas pelos códigos (p1, p2…). Nunca invente peças.\n" +
