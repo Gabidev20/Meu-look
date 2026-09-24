@@ -10,15 +10,17 @@ const gemini = () => (_client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_A
 // (503), sem cota (429) ou indisponível, o próximo é tentado automaticamente.
 export const MODELS = [
   ...(process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []),
+  "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
-  "gemini-2.5-flash",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
 ];
 
+// Para catalogar uma foto, um modelo "lite" basta e responde em menos de 1s.
+const FAST_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"];
+
 // Lembra qual modelo respondeu por último para tentar ele primeiro na próxima vez.
-let lastGoodModel: string | null = null;
+const lastGoodModel = new Map<string, string>(); // lista de modelos → último que respondeu
 
 type Effort = "minimal" | "low";
 
@@ -54,6 +56,7 @@ async function generateJson<T extends z.ZodType>(opts: {
   system: string;
   contents: Content[];
   effort: Effort;
+  models?: string[];
 }): Promise<z.infer<T>> {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("A IA ainda não foi configurada (falta a GEMINI_API_KEY na Vercel).");
@@ -63,7 +66,10 @@ async function generateJson<T extends z.ZodType>(opts: {
   delete jsonSchema.$schema;
 
   const deadline = Date.now() + 50_000;
-  const order = lastGoodModel ? [lastGoodModel, ...MODELS.filter((m) => m !== lastGoodModel)] : MODELS;
+  const models = opts.models ?? MODELS;
+  const key = models.join(",");
+  const preferred = lastGoodModel.get(key);
+  const order = preferred ? [preferred, ...models.filter((m) => m !== preferred)] : models;
   let lastError: unknown;
 
   for (const model of order) {
@@ -85,7 +91,7 @@ async function generateJson<T extends z.ZodType>(opts: {
       });
       if (!response.text) throw new Error("A IA não respondeu. Tente de novo.");
       const result = opts.schema.parse(JSON.parse(response.text));
-      lastGoodModel = model;
+      lastGoodModel.set(key, model);
       return result;
     } catch (e) {
       lastError = controller.signal.aborted ? new TimeoutError() : e;
@@ -104,7 +110,7 @@ async function generateJson<T extends z.ZodType>(opts: {
 /** Diagnóstico: testa rapidamente cada modelo com a chave configurada. */
 export async function pingModels() {
   return Promise.all(
-    MODELS.map(async (model) => {
+    [...new Set([...MODELS, "gemini-3.7-flash", "gemini-3.8-flash"])].map(async (model) => {
       const started = Date.now();
       try {
         const r = await gemini().models.generateContent({
@@ -150,6 +156,7 @@ export async function analyzeItemImage(
   return generateJson({
     schema: ItemAnalysis,
     effort: "minimal",
+    models: FAST_MODELS,
     system:
       "Você é um personal stylist catalogando o guarda-roupa de um cliente. " +
       "Descreva a peça principal da foto (ignore fundo, cabide, mãos ou pessoa vestindo). " +
