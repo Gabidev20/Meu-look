@@ -30,6 +30,7 @@ export function ItemForm({
     stylesText: (initial.style_tags ?? []).join(", "),
   });
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [pending, startTransition] = useTransition();
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
@@ -61,7 +62,7 @@ export function ItemForm({
   }
 
   function remove() {
-    if (!id || !confirm("Remover esta peça do guarda-roupa?")) return;
+    if (!id) return;
     startTransition(async () => {
       const res = await deleteItem(id);
       if (!res.ok) return setError(res.error);
@@ -163,9 +164,27 @@ export function ItemForm({
 
       {error && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
+      {/* Confirmação na própria página: alguns navegadores bloqueiam o confirm() nativo. */}
+      {confirmingDelete && (
+        <div className="flex items-center gap-3 rounded-xl bg-red-50 p-3 text-sm text-red-800">
+          <span className="flex-1">Remover esta peça do guarda-roupa?</span>
+          <button type="button" className="text-muted" onClick={() => setConfirmingDelete(false)}>
+            Cancelar
+          </button>
+          <button type="button" onClick={remove} disabled={pending} className="font-medium text-red-700">
+            {pending ? "Removendo…" : "Sim, remover"}
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-3">
         {id && (
-          <button type="button" onClick={remove} disabled={pending} className="btn-ghost text-red-700">
+          <button
+            type="button"
+            onClick={() => setConfirmingDelete(true)}
+            disabled={pending}
+            className="btn-ghost text-red-700"
+          >
             Remover
           </button>
         )}

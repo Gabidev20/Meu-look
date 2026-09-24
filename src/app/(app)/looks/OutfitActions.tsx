@@ -1,10 +1,30 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { deleteOutfit, markWorn, toggleFavorite } from "@/app/actions";
 
 export function OutfitActions({ id, isFavorite }: { id: string; isFavorite: boolean }) {
   const [pending, startTransition] = useTransition();
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // Confirmação na própria página: alguns navegadores bloqueiam o confirm() nativo.
+  if (confirmingDelete) {
+    return (
+      <div className="flex items-center gap-3 rounded-xl bg-red-50 p-3 text-sm text-red-800">
+        <span className="flex-1">Excluir este look?</span>
+        <button className="text-muted" onClick={() => setConfirmingDelete(false)}>
+          Cancelar
+        </button>
+        <button
+          className="font-medium text-red-700"
+          disabled={pending}
+          onClick={() => startTransition(() => deleteOutfit(id))}
+        >
+          {pending ? "Excluindo…" : "Sim, excluir"}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-2">
@@ -27,9 +47,7 @@ export function OutfitActions({ id, isFavorite }: { id: string; isFavorite: bool
         className="btn-ghost text-muted"
         aria-label="Excluir look"
         disabled={pending}
-        onClick={() => {
-          if (confirm("Excluir este look?")) startTransition(() => deleteOutfit(id));
-        }}
+        onClick={() => setConfirmingDelete(true)}
       >
         ✕
       </button>
