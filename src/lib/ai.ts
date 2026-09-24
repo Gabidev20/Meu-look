@@ -11,13 +11,13 @@ const gemini = () => (_client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_A
 export const MODELS = [
   ...(process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []),
   "gemini-3.6-flash",
-  "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
+  "gemini-3.5-flash",
 ];
 
 // Para catalogar uma foto, um modelo "lite" basta e responde em menos de 1s.
-const FAST_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"];
+const FAST_MODELS = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite"];
 
 // Lembra qual modelo respondeu por último para tentar ele primeiro na próxima vez.
 const lastGoodModel = new Map<string, string>(); // lista de modelos → último que respondeu
@@ -110,7 +110,7 @@ async function generateJson<T extends z.ZodType>(opts: {
 /** Diagnóstico: testa rapidamente cada modelo com a chave configurada. */
 export async function pingModels() {
   return Promise.all(
-    [...new Set([...MODELS, "gemini-3.7-flash", "gemini-3.8-flash"])].map(async (model) => {
+    MODELS.map(async (model) => {
       const started = Date.now();
       try {
         const r = await gemini().models.generateContent({
