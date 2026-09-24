@@ -1,27 +1,59 @@
 import "server-only";
-import { ApiError, GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
+import { ApiError, GoogleGenAI, ThinkingLevel, type Content, type ThinkingConfig } from "@google/genai";
 import { z } from "zod";
 import { CATEGORY_VALUES, type Item, type Outfit, type SuggestedLook } from "./types";
 
 let _client: GoogleGenAI | null = null;
 const gemini = () => (_client ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
 
-// Modelos do plano gratuito. Se a cota do principal acabar no dia, tenta o reserva.
-const MODELS = [process.env.GEMINI_MODEL || "gemini-3.5-flash", "gemini-3.1-flash-lite"];
+// Modelos do plano gratuito, do melhor para o mais simples. Quando um está sobrecarregado
+// (503), sem cota (429) ou indisponível, o próximo é tentado automaticamente.
+export const MODELS = [
+  ...(process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []),
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+];
+
+// Lembra qual modelo respondeu por último para tentar ele primeiro na próxima vez.
+let lastGoodModel: string | null = null;
+
+type Effort = "minimal" | "low";
+
+/** Cada geração de modelo configura o "raciocínio" de um jeito. */
+function thinkingFor(model: string, effort: Effort): ThinkingConfig | undefined {
+  if (model.startsWith("gemini-2.5")) return { thinkingBudget: model.includes("lite") ? 0 : effort === "minimal" ? 0 : 1024 };
+  if (model.startsWith("gemini-3")) return { thinkingLevel: effort === "minimal" ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW };
+  return undefined;
+}
+
+const RETRYABLE = [400, 404, 408, 429, 500, 502, 503, 504];
+
+function friendly(e: unknown): Error {
+  if (e instanceof TimeoutError) return new Error("A IA demorou demais para responder. Tente de novo em instantes.");
+  if (e instanceof ApiError) {
+    if (e.status === 429) return new Error("A cota gratuita da IA acabou por hoje. Tente de novo amanhã.");
+    if (e.status === 503 || e.status >= 500)
+      return new Error("A IA do Google está sobrecarregada agora. Tente de novo em alguns minutos.");
+    if (e.status === 401 || e.status === 403)
+      return new Error("A chave do Gemini foi recusada pelo Google. Confira a GEMINI_API_KEY na Vercel.");
+  }
+  return e instanceof Error ? e : new Error("Algo deu errado com a IA.");
+}
 
 class TimeoutError extends Error {}
 
 /**
- * Chama o Gemini pedindo JSON no formato do schema e valida a resposta.
- * Cada tentativa tem um limite de tempo; se estourar (ou a cota acabar), tenta o modelo reserva.
- * A soma das tentativas precisa caber no limite da função na Vercel (maxDuration = 60s).
+ * Chama o Gemini pedindo JSON no formato do schema e valida a resposta, passando pelos
+ * modelos gratuitos até um responder. Tudo precisa caber no limite da função na Vercel (60s).
  */
 async function generateJson<T extends z.ZodType>(opts: {
   schema: T;
   system: string;
   contents: Content[];
-  thinking: ThinkingLevel;
-  timeoutMs: number;
+  effort: Effort;
 }): Promise<z.infer<T>> {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("A IA ainda não foi configurada (falta a GEMINI_API_KEY na Vercel).");
@@ -30,10 +62,15 @@ async function generateJson<T extends z.ZodType>(opts: {
   const jsonSchema: Record<string, unknown> = { ...z.toJSONSchema(opts.schema) };
   delete jsonSchema.$schema;
 
+  const deadline = Date.now() + 50_000;
+  const order = lastGoodModel ? [lastGoodModel, ...MODELS.filter((m) => m !== lastGoodModel)] : MODELS;
   let lastError: unknown;
-  for (const model of MODELS) {
+
+  for (const model of order) {
+    const remaining = deadline - Date.now();
+    if (remaining < 5_000) break;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.min(22_000, remaining));
     try {
       const response = await gemini().models.generateContent({
         model,
@@ -42,31 +79,50 @@ async function generateJson<T extends z.ZodType>(opts: {
           systemInstruction: opts.system,
           responseMimeType: "application/json",
           responseJsonSchema: jsonSchema,
-          thinkingConfig: { thinkingLevel: opts.thinking },
+          thinkingConfig: thinkingFor(model, opts.effort),
           abortSignal: controller.signal,
         },
       });
       if (!response.text) throw new Error("A IA não respondeu. Tente de novo.");
-      return opts.schema.parse(JSON.parse(response.text));
+      const result = opts.schema.parse(JSON.parse(response.text));
+      lastGoodModel = model;
+      return result;
     } catch (e) {
       lastError = controller.signal.aborted ? new TimeoutError() : e;
-      console.error(`Gemini ${model} falhou:`, e);
-      const retryable =
-        controller.signal.aborted ||
-        (e instanceof ApiError && [400, 404, 429, 500, 503].includes(e.status));
-      if (retryable) continue;
-      throw e;
+      console.error(`Gemini ${model} falhou:`, e instanceof Error ? e.message : e);
+      if (controller.signal.aborted) continue;
+      if (e instanceof ApiError && RETRYABLE.includes(e.status)) continue;
+      if (e instanceof SyntaxError || e instanceof z.ZodError) continue; // JSON malformado: tenta outro modelo
+      throw friendly(e);
     } finally {
       clearTimeout(timer);
     }
   }
-  if (lastError instanceof TimeoutError) {
-    throw new Error("A IA demorou demais para responder. Tente de novo em instantes.");
-  }
-  if (lastError instanceof ApiError && lastError.status === 429) {
-    throw new Error("A cota gratuita da IA acabou por hoje. Tente de novo amanhã.");
-  }
-  throw lastError;
+  throw friendly(lastError);
+}
+
+/** Diagnóstico: testa rapidamente cada modelo com a chave configurada. */
+export async function pingModels() {
+  return Promise.all(
+    MODELS.map(async (model) => {
+      const started = Date.now();
+      try {
+        const r = await gemini().models.generateContent({
+          model,
+          contents: "Responda só: ok",
+          config: { thinkingConfig: thinkingFor(model, "minimal"), abortSignal: AbortSignal.timeout(20_000) },
+        });
+        return { model, ok: true, ms: Date.now() - started, resposta: r.text?.slice(0, 20) };
+      } catch (e) {
+        return {
+          model,
+          ok: false,
+          ms: Date.now() - started,
+          erro: e instanceof ApiError ? `${e.status}: ${e.message.slice(0, 160)}` : String(e).slice(0, 160),
+        };
+      }
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +149,7 @@ export async function analyzeItemImage(
 ): Promise<ItemAnalysis> {
   return generateJson({
     schema: ItemAnalysis,
-    thinking: ThinkingLevel.MINIMAL,
-    timeoutMs: 25_000,
+    effort: "minimal",
     system:
       "Você é um personal stylist catalogando o guarda-roupa de um cliente. " +
       "Descreva a peça principal da foto (ignore fundo, cabide, mãos ou pessoa vestindo). " +
@@ -181,8 +236,7 @@ export async function suggestLooks(opts: {
 
   const parsed = await generateJson({
     schema: LooksResponse,
-    thinking: ThinkingLevel.LOW,
-    timeoutMs: 28_000,
+    effort: "low",
     system:
       "Você é um personal stylist experiente e com bom gosto. Monte looks usando EXCLUSIVAMENTE peças " +
       "do guarda-roupa informado, referenciadas pelos códigos (p1, p2…). Nunca invente peças.\n" +
